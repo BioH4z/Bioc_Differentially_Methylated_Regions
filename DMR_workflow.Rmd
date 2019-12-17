@@ -1,0 +1,153 @@
+---
+title: "DMR workflow"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+<style>
+  .main-container {
+    max-width: 1800px !important;
+  }
+</style>
+
+## Donwloading the data
+
+Let's start downloading data from The Cancer Genome Atlas (TCGA).
+An easy way to do it, it's using TCGAbiolinks.
+We will download the DNA methylation data of the Pancreatic adenocarcinoma (PAAD) dataset: HumanMethylation450 PAAD.
+
+ATTENTION! These steps are time consuming! The code is commented and, instead, we will use the "data_4_test.rda" file.
+```{r tcgabiolinks, echo=TRUE}
+#library(TCGAbiolinks)
+
+#query.met <- GDCquery(project = "TCGA-PAAD", legacy = TRUE, data.category = "DNA methylation", platform = "Illumina Human Methylation 450")
+```
+GDCquery function can select the specific dataset of your interest. In the help page, it's possible to find all the available data categories (in this case "DNA methylation") and all the platforms (in this case "Illumina Human Methylation 450").
+
+```{r download data, echo=TRUE}
+#GDCdownload(query.met, directory = "~/PAAD/")
+```
+GDCdownload function will download, in a specific directory (in this case "~/PAAD/"), all the data. Each sample will be stored in a separate subfolder.
+
+```{r preparation,echo=TRUE}
+#data <- GDCprepare(query = query.met, summarizedExperiment = FALSE, save = TRUE, save.filename = "PAAD.rda", directory = "~/PAAD/")
+```
+GDCprepare function will create one big *.rda file for this dataset.
+
+ATTENTION! This file could be huge and the entire process is time consuming but the final result is very nice.
+
+```{r data_head, echo=FALSE}
+knitr::include_graphics('/home/domenico/afd547.png')
+```
+
+For this session, I created a reduced version of this dataset. I eliminated the columns from 1 to 3 leaving only CpGs name as rowname and samples' names as colname. I also decided to round the beta-values from the third decimal.
+
+download link:https://drive.google.com/open?id=1lYbgbAtG6KIL1XrLJ3O4lQGFkTOJcL9Y
+
+```{r data}
+load("~/data_4_test.rda")
+```
+Let's take a look!
+```{r echo=FALSE}
+knitr::include_graphics('/home/domenico/header_tabella.png')
+```
+
+
+## Splitting in healthy and cancer samples
+
+We are going to separate the dataframe in two dataframes. One for healthy and one for cancer samples. We will use the samples' names (colnames). 
+
+```{r separate, echo=TRUE}
+sample_names=colnames(data_4_test)
+strings=unlist(strsplit(sample_names, split = ".", fixed = T))
+seq=seq(from=4, to=length(strings), by=7)
+list=strings[seq]
+healthy=grep(pattern = "11", list)
+cancer=grep(pattern = "11", list, invert = T)
+healthy_samples=sample_names[healthy]
+cancer_samples=sample_names[cancer]
+```
+
+Note that each name is divided by "." and only the fourth section was used to assess the status. "11A" or "11B" identify healthy samples while numbers < 11 identify cancer samples.
+
+```{r}
+tab_healthy=data_4_test[,healthy]
+tab_cancer=data_4_test[,cancer]
+```
+How does an healthy sample look like?
+
+```{r density, echo=FALSE}
+plot(density(tab_healthy[,9], na.rm = T), main="Beta-values density plot")
+```
+
+##LIMMA
+
+LIMMA is a library for the analysis of gene expression microarray data, especially the use of linear models for analysing designed experiments and the assessment of differential expression.
+
+Creating one big dataframe with ordered samples
+```{r}
+tab=cbind(tab_healthy, tab_cancer)
+```
+
+Filtration: cross-hybridizating CpGs, polymorphic CpGs or CpGs with NA values.
+```{r}
+tab=tab[complete.cases(tab),]
+```
+
+###<span style="color:red">Testing limma</span>
+
+After the first analysis, you should test if your limma workflow works well. You can use this:
+```{r test, echo=TRUE}
+#tab=tab[,sample(ncol(tab))] 
+```
+
+It scrambles randomly the columns of your dataframe. In this way, the output will be with few or none DMRs because healthy and cancer samples have been mixed.
+
+##Preparing the matrix
+
+```{r M-values}
+mat=as.matrix(tab)
+mat=log2(mat/(1-mat))
+```
+
+In this way, we are creating a matrix of M-values. In literature, it was suggested to avoid beta-values and, instead, to use M-values.
+
+```{r LIMMA}
+library("limma")
+group=c(rep("Normal", length(healthy_samples)), rep("Cancer", length(cancer_samples)))
+design=data.frame(samples=c(healthy_samples, cancer_samples), group=group)
+designMat <- model.matrix(~ 0+factor(group), data=design)
+colnames(designMat) <- c("Cancer", "Normal")
+```
+
+##Fitting the linear model
+
+Use lmFit function to fit the linear model, and eBayes to adjust it and calculate p-values:
+
+```{r fit,echo=TRUE}
+fit=lmFit(mat, designMat)
+contrast.matrix=makeContrasts(contrasts ="Cancer-Normal", levels=designMat)
+fit2=contrasts.fit(fit, contrast.matrix)
+fit2=eBayes(fit2) 
+```
+Finally, we can obtain the DMRs
+
+```{r DMR, echo=TRUE}
+DMR=topTable(fit2, coef=1, number=Inf, p.value = 1)
+```
+By default only 10 probes are listed. If you want you can display them all and then filter them as you want.
+
+```{r, echo=FALSE}
+head(DMR)
+```
+
+A good way to filter them: choosing an higher logFC.
+
+```{r DMR_filter,echo=TRUE}
+DMR2=DMR[which(DMR$adj.P.Val < 0.01),]
+
+DMR3=DMR2[which(abs(DMR2$logFC) > 2),]
+```
+
